@@ -109,7 +109,7 @@ def call() {
                 env.OS_NETWORK="icp_network4"
                 env.OS_PRIVATE_NETWORK="icp_network4"
                 env.SCG_ID = "213343ac-cd7f-47b7-a466-7a8c65ed8985"
-                env.VOLUME_STORAGE_TEMPLATE = "c340f1_v7k base template"
+                env.VOLUME_STORAGE_TEMPLATE = "ltc12u30_fv72k base template"
                 env.OS_INSECURE = true
                 env.DNS_FORWARDERS = "1.1.1.1; 9.9.9.9"
                 env.OS_AUTH_URL= "${url_scnlcicd}"

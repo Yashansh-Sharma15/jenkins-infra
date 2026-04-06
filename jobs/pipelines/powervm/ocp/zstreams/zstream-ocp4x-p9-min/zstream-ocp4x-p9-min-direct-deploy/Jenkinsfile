@@ -106,6 +106,8 @@ pipeline {
                     // Added a condition for RHCOS_RELEASE to be set to 4.19 for OCP 4.20/4.21
                     if (env.OCP_RELEASE == "4.20" || env.OCP_RELEASE == "4.21"){
                         env.RHCOS_RELEASE = "4.19"
+                    } else if (env.OCP_RELEASE == "4.22"){
+                        env.RHCOS_RELEASE = "9.8"
                     }
                     else {
                         env.RHCOS_RELEASE = env.OCP_RELEASE
