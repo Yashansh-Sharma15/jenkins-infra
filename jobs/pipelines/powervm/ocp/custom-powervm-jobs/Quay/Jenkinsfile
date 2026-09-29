@@ -16,6 +16,7 @@ pipeline {
         string(defaultValue: '', description: 'Enter index image for installing Quay', name: 'IndexImageQuay')
         string(defaultValue: 'stable-3.10', description: 'Select the Channel for Quay Operator', name: 'Channel')
         password(defaultValue: '', description: 'Paste pull secret JSON', name: 'PULL_SECRET_INPUT')
+        booleanParam(defaultValue: false, description: 'Run Cypress regression tests (API + Smoke) after Quay installation, via the standalone run-quay-regression job', name: 'RUN_REGRESSION_TESTS')
     }
     environment {
         //users and credentials. All must be defined in Jenkins Credentials
@@ -203,6 +204,68 @@ pipeline {
                 validateCoStatus()
             }
         }
+        // =====================================================================
+        // Capture kubeadmin password AND kubeconfig as env vars, fetched
+        // directly from the bastion via SSH. Neither file exists in the
+        // Jenkins workspace itself - both only ever live on the bastion
+        // under /root/openstack-upi/auth/. kubeconfig is base64-encoded
+        // since env vars must stay single-line-safe when threaded through
+        // later 'sh' blocks and the 'build job:' parameters call.
+        //
+        // Stashing both in env.* (strings) makes them available to the
+        // 'Run Regression Tests' stage later, which triggers a SEPARATE
+        // Jenkins job (run-quay-regression) rather than running Cypress
+        // in-process - see that stage's comment below for why.
+        //
+        // Wrapped in try/catch: a failure here must never abort the whole
+        // pipeline and cascade-skip Quay Installation, Stabilize Quay
+        // Deployment, or the timeout/regression stages.
+        // =====================================================================
+        stage('Capture Cluster Credentials') {
+            steps {
+                script {
+                    try {
+                        def kubeadminPassword = sh(
+                            script: '''
+                                cd ${WORKSPACE}/deploy
+                                ssh -o StrictHostKeyChecking=no -i id_rsa root@${BASTION_IP} \
+                                    "cat /root/openstack-upi/auth/kubeadmin-password"
+                            ''',
+                            returnStdout: true
+                        ).trim()
+                        if (kubeadminPassword) {
+                            env.KUBEADMIN_PASSWORD = kubeadminPassword
+                            echo "Captured kubeadmin password from bastion (${env.BASTION_IP})"
+                        } else {
+                            echo "WARNING: kubeadmin password came back empty from bastion. Regression tests will run without OCP credentials."
+                        }
+                    } catch (err) {
+                        echo "WARNING: Failed to capture kubeadmin password from bastion (${err}). Continuing without it."
+                        failedStages.add(env.STAGE_NAME)
+                    }
+
+                    try {
+                        def kubeconfigB64 = sh(
+                            script: '''
+                                cd ${WORKSPACE}/deploy
+                                ssh -o StrictHostKeyChecking=no -i id_rsa root@${BASTION_IP} \
+                                    "cat /root/openstack-upi/auth/kubeconfig" | base64 -w0
+                            ''',
+                            returnStdout: true
+                        ).trim()
+                        if (kubeconfigB64) {
+                            env.KUBECONFIG_B64 = kubeconfigB64
+                            echo "Captured kubeconfig from bastion (${env.BASTION_IP})"
+                        } else {
+                            echo "WARNING: kubeconfig came back empty from bastion. Smoke tests will not have cluster access."
+                        }
+                    } catch (err) {
+                        echo "WARNING: Failed to capture kubeconfig from bastion (${err}). Continuing without it."
+                        failedStages.add(env.STAGE_NAME)
+                    }
+                }
+            }
+        }
         stage('Quay Installation') {
             steps {
                 script {
@@ -284,25 +347,100 @@ pipeline {
                 }
             }
         }
-        stage('Waiting to timeout') {
-            steps {
-                script {
-                    ansiColor('xterm') {
-                        echo ""
-                    }
-                    try {
-                        def TIMEOUT_MIN = TIMEOUT.toInteger()
-                        def TIMEOUT_SEC = 0
-                        if (TIMEOUT_MIN != 0) {
-                            TIMEOUT_SEC = TIMEOUT_MIN * 60
+        // =====================================================================
+        // PARALLEL: hold the cluster for the timeout window while regression
+        // tests run concurrently (when enabled).
+        // =====================================================================
+        stage('Parallel: Timeout & Regression Tests') {
+            parallel {
+                stage('Waiting to timeout') {
+                    steps {
+                        script {
+                            ansiColor('xterm') {
+                                echo ""
+                            }
+                            try {
+                                def TIMEOUT_MIN = TIMEOUT.toInteger()
+                                def TIMEOUT_SEC = 0
+                                if (TIMEOUT_MIN != 0) {
+                                    TIMEOUT_SEC = TIMEOUT_MIN * 60
+                                }
+                                echo "HOLDING THE CLUSTER TEAR DOWN FOR ${TIMEOUT_MIN} MINUTES"
+                                sleep TIMEOUT_SEC
+                            }
+                            catch (err) {
+                                echo 'Error ! Timeout stage failed!'
+                                env.FAILED_STAGE = env.STAGE_NAME
+                                throw err
+                            }
                         }
-                        echo "HOLDING THE CLUSTER TEAR DOWN FOR ${TIMEOUT_MIN} MINUTES"
-                        sleep TIMEOUT_SEC
                     }
-                    catch (err) {
-                        echo 'Error ! Timeout stage failed!'
-                        env.FAILED_STAGE = env.STAGE_NAME
-                        throw err
+                }
+                // -------------------------------------------------------------
+                // Runs Cypress in a completely SEPARATE Jenkins job
+                // (run-quay-regression / Jenkinsfile.regression), not as a
+                // nested stage here. A stage with its own `agent`, nested
+                // inside a `parallel{}` block, underneath a pipeline whose
+                // top-level agent is a Docker container, repeatedly hit a
+                // structural Jenkins launcher bug (JENKINS-30600 / "process
+                // apparently never started") regardless of agent config.
+                // A separate top-level job gets a clean launcher context
+                // and avoids this entirely.
+                //
+                // ONE-TIME SETUP REQUIRED: a Jenkins job named exactly
+                // 'run-quay-regression' must exist, configured as "Pipeline
+                // script from SCM" pointing at this same repo/branch with
+                // script path Jenkinsfile.regression.
+                //
+                // propagate: false means a regression-test failure marks
+                // this pipeline UNSTABLE (via the check below) rather than
+                // FAILURE, so cluster cleanup always still runs.
+                // -------------------------------------------------------------
+                stage('Run Regression Tests') {
+                    when {
+                        expression { return params.RUN_REGRESSION_TESTS == true }
+                    }
+                    steps {
+                        script {
+                            ansiColor('xterm') {
+                                echo ""
+                            }
+                            try {
+                                // Build Quay and OCP hostnames from the cluster domain
+                                // CLUSTER_DOMAIN is set by setupCommonEnvironmentVariables()
+                                // e.g. apps.<cluster-name>.<base-domain>
+                                def quayEndpoint = "quay-registry.${env.CLUSTER_DOMAIN}"
+                                def ocpEndpoint = "console-openshift-console.${env.CLUSTER_DOMAIN}:6443"
+
+                                def downstream = build(
+                                    job: 'run-quay-regression',
+                                    wait: true,
+                                    propagate: false,
+                                    parameters: [
+                                        string(name: 'QUAY_ENDPOINT', value: quayEndpoint),
+                                        string(name: 'OCP_ENDPOINT', value: ocpEndpoint),
+                                        password(name: 'KUBEADMIN_PASSWORD', value: env.KUBEADMIN_PASSWORD ?: ''),
+                                        text(name: 'KUBECONFIG_B64', value: env.KUBECONFIG_B64 ?: ''),
+                                        string(name: 'QUAY_VERSION', value: env.QUAY_VERSION ?: ''),
+                                        string(name: 'QUAY_MINOR_VERSION', value: env.QUAY_MINOR_VERSION ?: ''),
+                                        string(name: 'OCP_RELEASE', value: env.OCP_RELEASE ?: '')
+                                    ]
+                                )
+
+                                echo "Downstream regression job '${downstream.fullDisplayName}' finished with result: ${downstream.result}"
+                                echo "Full results/artifacts (videos, screenshots, ctrf report): ${downstream.absoluteUrl}"
+
+                                if (downstream.result != 'SUCCESS') {
+                                    failedStages.add(env.STAGE_NAME)
+                                    currentBuild.result = 'UNSTABLE'
+                                }
+                            } catch (err) {
+                                echo "Failed to trigger or await 'run-quay-regression' job: ${err}"
+                                echo "Confirm the job exists and is named exactly 'run-quay-regression'."
+                                failedStages.add(env.STAGE_NAME)
+                                currentBuild.result = 'UNSTABLE'
+                            }
+                        }
                     }
                 }
             }
