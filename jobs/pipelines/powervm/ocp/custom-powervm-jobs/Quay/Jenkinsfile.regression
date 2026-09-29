@@ -1,0 +1,132 @@
+// =============================================================================
+// Jenkinsfile.regression
+//
+// Standalone job that runs Cypress regression tests (API + Smoke) against an
+// already-deployed Quay/OCP cluster. This is intentionally a SEPARATE Jenkins
+// job (not a nested stage inside the main ocp-quay pipeline) because nesting
+// it as a stage-with-its-own-agent inside a parallel{} block, underneath a
+// pipeline whose top-level agent is a Docker container, repeatedly hit:
+//
+//   Warning: JENKINS-30600: special launcher ... will be ignored
+//   process apparently never started in .../durable-XXXXXXXX
+//
+// This happened with BOTH a nested Docker agent and a plain label agent,
+// across multiple runs - meaning it's a structural Jenkins/launcher issue
+// with that nesting pattern, not something fixable by changing the agent
+// config. Running as its own top-level job sidesteps it entirely: a fresh
+// job gets a clean launcher context with no inherited Docker decoration
+// from a parent pipeline.
+//
+// SETUP REQUIRED (one-time, in Jenkins UI):
+//   1. Create a new Pipeline job named exactly: run-quay-regression
+//      (the main Jenkinsfile's 'build job:' call references this name)
+//   2. Point its "Pipeline script from SCM" at the same jenkins-infra repo /
+//      quay-ci branch, with script path: Jenkinsfile.regression
+//   3. No manual parameter setup needed - parameters below are picked up
+//      automatically from this file once the job runs once.
+// =============================================================================
+
+pipeline {
+    agent { label 'jump-vpc-x86_64' }
+
+    parameters {
+        string(name: 'QUAY_ENDPOINT', defaultValue: '', description: 'Quay registry hostname, e.g. quay-registry.apps.<cluster>.<domain>')
+        string(name: 'OCP_ENDPOINT', defaultValue: '', description: 'OCP console hostname:port, e.g. console-openshift-console.apps.<cluster>.<domain>:6443')
+        password(name: 'KUBEADMIN_PASSWORD', defaultValue: '', description: 'kubeadmin password for the OCP cluster (masked in build logs/history)')
+        text(name: 'KUBECONFIG_B64', defaultValue: '', description: 'base64-encoded kubeconfig for the OCP cluster (optional - required only for Smoke tests)')
+        string(name: 'QUAY_VERSION', defaultValue: '', description: 'e.g. 3.15, 3.18')
+        string(name: 'QUAY_MINOR_VERSION', defaultValue: '', description: 'e.g. 15, 18 (integer, used for version comparisons)')
+        string(name: 'OCP_RELEASE', defaultValue: '', description: 'e.g. 4.14')
+    }
+
+    environment {
+        // Bound directly here rather than passed as parameters from the
+        // caller - keeps GitHub credentials out of build parameter history.
+        GITHUB_USER = credentials('PUBLIC_GITHUB_USER')
+        GITHUB_TOKEN = credentials('PUBLIC_GITHUB_TOKEN')
+    }
+
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    // KUBEADMIN_PASSWORD is a `password()` parameter, so Jenkins
+                    // hands it back as a hudson.util.Secret object, not a plain
+                    // String - Secret has no .trim() method, so it must be
+                    // converted via GString interpolation first (the same safe
+                    // mechanism used elsewhere to get the plain text value).
+                    def kubeadminPasswordStr = "${params.KUBEADMIN_PASSWORD ?: ''}"
+
+                    def required = [
+                        'QUAY_ENDPOINT'     : params.QUAY_ENDPOINT,
+                        'OCP_ENDPOINT'      : params.OCP_ENDPOINT,
+                        'KUBEADMIN_PASSWORD': kubeadminPasswordStr,
+                        'QUAY_VERSION'      : params.QUAY_VERSION,
+                        'QUAY_MINOR_VERSION': params.QUAY_MINOR_VERSION,
+                        'OCP_RELEASE'       : params.OCP_RELEASE
+                    ]
+                    def missing = required.findAll { k, v -> !v?.trim() }.keySet()
+                    if (missing) {
+                        error "Missing required parameters: ${missing.join(', ')}. This job should only be triggered by the main ocp-quay pipeline's 'Run Regression Tests' stage, which supplies all of these automatically."
+                    }
+                    if (!params.KUBECONFIG_B64?.trim()) {
+                        echo "WARNING: KUBECONFIG_B64 not provided. API tests will still run, but Smoke tests will be skipped (they require cluster access)."
+                    }
+                }
+            }
+        }
+
+        stage('Decode Kubeconfig') {
+            when {
+                expression { return params.KUBECONFIG_B64?.trim() }
+            }
+            steps {
+                script {
+                    sh """
+                        echo '${params.KUBECONFIG_B64}' | base64 -d > ${WORKSPACE}/kubeconfig
+                    """
+                    env.KUBECONFIG = "${WORKSPACE}/kubeconfig"
+                    echo "Decoded kubeconfig to ${env.KUBECONFIG}"
+                }
+            }
+        }
+
+        stage('Run Regression Tests') {
+            steps {
+                script {
+                    try {
+                        sh """
+                            chmod +x ${WORKSPACE}/scripts/quay/run_regression.sh
+                            export QUAY_ENDPOINT="${params.QUAY_ENDPOINT}"
+                            export OCP_ENDPOINT="${params.OCP_ENDPOINT}"
+                            export KUBEADMIN_PASSWORD="${params.KUBEADMIN_PASSWORD}"
+                            export QUAY_VERSION="${params.QUAY_VERSION}"
+                            export QUAY_MINOR_VERSION="${params.QUAY_MINOR_VERSION}"
+                            export OCP_RELEASE="${params.OCP_RELEASE}"
+                            export GITHUB_USER="${env.GITHUB_USER}"
+                            export GITHUB_TOKEN="${env.GITHUB_TOKEN}"
+                            export WORKSPACE="${env.WORKSPACE}"
+                            ${env.KUBECONFIG ? "export KUBECONFIG=${env.KUBECONFIG}" : "# no kubeconfig - smoke tests will fail their own check and be skipped"}
+                            ${WORKSPACE}/scripts/quay/run_regression.sh
+                        """
+                    } catch (err) {
+                        echo "Regression tests failed: ${err}"
+                        currentBuild.result = 'UNSTABLE'
+                    } finally {
+                        archiveArtifacts artifacts: 'quay-tests-src/quay-api-tests/cypress/videos/**/*.mp4', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'quay-tests-src/quay-api-tests/cypress/screenshots/**/*.png', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'quay-tests-src/quay-api-tests/cypress/results/ctrf-report.json', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'quay-tests-src/quay-frontend-tests/cypress/videos/**/*.mp4', allowEmptyArchive: true
+                        archiveArtifacts artifacts: 'quay-tests-src/quay-frontend-tests/cypress/screenshots/**/*.png', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
