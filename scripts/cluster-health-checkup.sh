@@ -38,7 +38,14 @@ section "Cluster Version History"
 oc get clusterversion -o json | jq '.items[0].status.history'
 
 section "Bastion OS Release"
-cat /etc/os-release
+if [ -n "${BASTION_IP:-}" ] && [ -f "${WORKSPACE}/deploy/id_rsa" ]; then
+    ssh -o StrictHostKeyChecking=no \
+        -i ${WORKSPACE}/deploy/id_rsa \
+        root@${BASTION_IP} \
+        "cat /etc/os-release" 2>/dev/null || cat /etc/os-release
+else
+    cat /etc/os-release
+fi
 
 section "Master-0 RHCOS Release"
 oc debug node/master-0 -- chroot /host cat /etc/os-release
