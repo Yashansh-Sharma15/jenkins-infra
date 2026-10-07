@@ -16,6 +16,7 @@ pipeline {
         string(defaultValue: '', description: 'Upgrade Build Release', name: 'UpgradeRelease')
         booleanParam(defaultValue: false, name: 'Rune2e', description: 'Select if you want to run e2e tests. E2e runs after cluster upgrade')
         string(defaultValue: '720', description: 'Enter time(in Minutes) to retain the cluster', name: 'KeepFor')
+        string(defaultValue: '', description: 'Jira Ticket ID to update with logs and health summary (e.g., POCPQE-2563)', name: 'JiraTicketId')
     }
     environment {
         //users and credentials. All must be defined in Jenkins Credentials
@@ -40,6 +41,7 @@ pipeline {
         UPGRADE_BUILD="${params.UpgradeBuild}"
         TIMEOUT = "${params.KeepFor}"
         ENABLE_E2E_TEST = "${params.Rune2e}"
+        JIRA_TICKET_ID = "${params.JiraTicketId}"
 
         //Branch
         OPENSHIFT_POWERVC_GIT_TF_DEPLOY_BRANCH="main"//The download branch
@@ -240,6 +242,12 @@ pipeline {
         stage('Deploy OCP Cluster') {
             steps {
                 deployCluster()
+                script {
+                    sh '''
+                        cd ${WORKSPACE}/deploy
+                        make terraform:output TERRAFORM_DIR=.${TARGET} > ${WORKSPACE}/deploy/terraform_outputs.txt 2>/dev/null || true
+                    '''
+                }
             }
         }
         stage('Run crontab script for capturing outputs of multiple commands') {
@@ -298,6 +306,45 @@ pipeline {
                 archiveAllArtifacts("deploy/cluster-health.log")
             }
         }
+        stage('Update Jira with Health & Logs') {
+            steps {
+                script {
+                    def jiraIssue = env.JIRA_TICKET_ID?.trim()
+                    if (jiraIssue) {
+                        def scriptPath = "${WORKSPACE}/jenkins-infra/scripts/jira-helper.py"
+                        if (!fileExists(scriptPath)) {
+                            scriptPath = "${WORKSPACE}/scripts/jira-helper.py"
+                        }
+                        def releaseVer = env.UPGRADE_RELEASE ?: env.OCP_RELEASE ?: ""
+                        def fromBuildVer = env.CURRENT_BUILD ?: env.OPENSHIFT_IMAGE ?: ""
+                        def toBuildVer = env.UPGRADE_BUILD ?: env.UPGRADE_IMAGE ?: releaseVer
+                        def runE2eFlag = env.ENABLE_E2E_TEST ?: "false"
+                        def clusterDetailsFile = fileExists("${WORKSPACE}/deploy/terraform_outputs.txt") ? "${WORKSPACE}/deploy/terraform_outputs.txt" : "${WORKSPACE}/deploy/vars.tfvars"
+                        echo "Posting summary report and attachments to Jira Issue: ${jiraIssue}..."
+                        withCredentials([string(credentialsId: 'JIRA_API_TOKEN', variable: 'JIRA_API_TOKEN')]) {
+                            sh """
+                                export JIRA_BASE_URL="https://jsw.ibm.com"
+                                chmod +x ${scriptPath} || true
+                                python3 ${scriptPath} post-report \
+                                    --issue "${jiraIssue}" \
+                                    --job-type "next-upgrade" \
+                                    --release "${releaseVer}" \
+                                    --from-build "${fromBuildVer}" \
+                                    --to-build "${toBuildVer}" \
+                                    --run-e2e "${runE2eFlag}" \
+                                    --cluster-details "${clusterDetailsFile}" \
+                                    --health-log "${WORKSPACE}/deploy/cluster-health.log" \
+                                    --e2e-log "${WORKSPACE}/deploy/summary.txt" \
+                                    --screenshots-dir "${WORKSPACE}/deploy/ui-screenshots" || true
+                            """
+                        }
+                        echo "Jira update completed."
+                    } else {
+                        echo "No Jira Ticket ID provided (JIRA_TICKET_ID is empty). Skipping Jira report post."
+                    }
+                }
+            }
+        }
         stage('Waiting to timeout') {
             steps {
                 script {
@@ -338,7 +385,7 @@ pipeline {
                     cleanupOcp4Cluster()
                     // Only notify if the build was not aborted or canceled
                     if (currentBuild.result != 'ABORTED') {
-                        notifyBySlack(currentBuild.result, env.MESSAGE)
+                       // notifyBySlack(currentBuild.result, env.MESSAGE)
                     }
                     cleanWs()
                 }
