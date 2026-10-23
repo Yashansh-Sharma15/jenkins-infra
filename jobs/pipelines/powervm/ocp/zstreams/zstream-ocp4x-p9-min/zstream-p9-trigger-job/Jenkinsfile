@@ -66,8 +66,8 @@ def getChangedFilesList() {
             mkdir "versions"
         fi
 
-        # Checking if new builds are available for OCP 4.15, 4.16, 4.17, 4.18, 4.19 and 4.20
-        for ocp_version in 15 16 17 18 19 20
+        # Checking if new builds are available for OCP 4.15 through 4.22
+        for ocp_version in 15 16 17 18 19 20 21 22
         do
             VERSION=`curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "4.${ocp_version}.*multi" | grep -v "multi-\\|rc\\|ec\\|fc" | tail -1 | tr -d '"'`
             if [ "$VERSION" = "" ] && [ ! -f versions/4.$ocp_version.txt ];
@@ -84,13 +84,33 @@ def getChangedFilesList() {
             fi
 
             # Comparing the builds from quay and artifacts, updating the artifcats with lastest builds
-            if [ "$(cat versions/4.$ocp_version.txt | grep multi)" != "$VERSION" ] && [ "$VERSION" != "" ];
+            if [ "$(cat versions/4.$ocp_version.txt 2>/dev/null | grep multi)" != "$VERSION" ] && [ "$VERSION" != "" ];
             then
                 echo $VERSION > versions/4.$ocp_version.txt
-                echo -n $(date +%Y-%m-%d) >> versions/4.$ocp_version.txt 
+                echo -n $(date +%Y-%m-%d) >> versions/4.$ocp_version.txt
                 echo "versions/4.$ocp_version.txt"
             fi
         done
+
+        # Checking if builds are available for OCP 5.0 (used as next release target for 4.22)
+        VERSION_50=`curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "5\.0\..*multi" | grep -v "multi-\\|rc\\|ec\\|fc" | tail -1 | tr -d '"'`
+        if [ "$VERSION_50" = "" ] && [ ! -f versions/5.0.txt ];
+        then
+            for i in 2 3 4 5 6 7 8 9 10 11 12
+            do
+                VERSION_50=`curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100&page=$i" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "5\.0\..*multi" | grep -v "multi-\\|rc\\|ec\\|fc" | tail -1 | tr -d '"'`
+                if [ "$VERSION_50" != "" ] ;
+                then
+                    break
+                fi
+            done
+        fi
+
+        if [ "$VERSION_50" != "" ] && [ "$(cat versions/5.0.txt 2>/dev/null | grep multi)" != "$VERSION_50" ];
+        then
+            echo $VERSION_50 > versions/5.0.txt
+            echo -n $(date +%Y-%m-%d) >> versions/5.0.txt
+        fi
     '''
     if(changedFiles != null){
         changedFiles=changedFiles.trim().tokenize("\n")
@@ -102,7 +122,12 @@ def getReleases(filename){
   // Generates the details like current ocp release, next ocp release and next release filename
   currentRelease = filename.substring(filename.indexOf("/")+1,filename.indexOf(".txt"))
   def version = currentRelease.substring(currentRelease.indexOf(".")+1,currentRelease.size())
-  nextRelease = currentRelease.replace("."+version, "."+(version.toInteger()+1).toString())
+  // Special case: next release after 4.22 is 5.0, not 4.23
+  if (currentRelease == "4.22") {
+      nextRelease = "5.0"
+  } else {
+      nextRelease = currentRelease.replace("."+version, "."+(version.toInteger()+1).toString())
+  }
   nextReleaseFile = filename.replace(currentRelease,nextRelease.toString())
   return [currentRelease, nextRelease, nextReleaseFile]
 }
@@ -152,7 +177,7 @@ def next_release_builds(release_file){
 }
 
 void triggerBuild(release, latestBuild, currentStableBuild, nextStableBuild, next_release){
-    keepfor = "720"
+    keepfor = "100"
     latestBuild = "quay.io/openshift-release-dev/ocp-release:${latestBuild}"
     
     //Direct deployment Job Trigger
