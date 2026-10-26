@@ -100,12 +100,14 @@ def getChangedFilesList() {
         done
 
         # Checking if builds are available for OCP 5.0 (used as next release target for 4.22)
-        VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "5\.0\..*multi" | grep -v "multi-\\|ec\\|fc" | tail -1 | tr -d '"')
+        GREP_50="5[.]0[.].*multi"
+        GREP_50_EXCL="multi-|ec|fc"
+        VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "$GREP_50" | grep -v "$GREP_50_EXCL" | tail -1 | tr -d '"')
         if [ "$VERSION_50" = "" ] && [ ! -f versions/5.0.txt ];
         then
             for i in 2 3 4 5 6 7 8 9 10 11 12
             do
-                VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100&page=$i" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "5\.0\..*multi" | grep -v "multi-\\|ec\\|fc" | tail -1 | tr -d '"')
+                VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100&page=$i" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "$GREP_50" | grep -v "$GREP_50_EXCL" | tail -1 | tr -d '"')
                 if [ "$VERSION_50" != "" ] ;
                 then
                     break
