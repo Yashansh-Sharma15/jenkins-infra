@@ -408,13 +408,23 @@ def main():
         checklist_items.append(item2)
         
         if args.next_stable:
-            item3 = f"Upgrade from {args.release} to {args.next_stable} and run e2e"
+            item3 = f"Upgrade from {args.release} to {args.next_stable}"
             desc_lines.append(f"* {item3}")
             checklist_items.append(item3)
         
         description = "\n".join(desc_lines)
         issue_key = create_jira_task(args.project, summary, description, epic_key=args.epic, checklist_items=checklist_items)
-        
+
+        # Post checklist items as a comment in Smart Checklist native format
+        # so the engineer can tick them off as each job completes
+        if issue_key and checklist_items:
+            try:
+                checklist_comment = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
+                post_comment(issue_key, checklist_comment)
+                print(f"Posted Smart Checklist items as comment on {issue_key}.")
+            except Exception as ex:
+                print(f"Note: Could not post checklist comment: {ex}")
+
         if args.output_file and issue_key:
             with open(args.output_file, "w") as f:
                 f.write(issue_key.strip())
