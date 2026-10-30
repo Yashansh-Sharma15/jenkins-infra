@@ -98,6 +98,37 @@ def get_checklist_field_id():
         print(f"Could not auto-detect checklist field id: {e}")
     return None
 
+def post_smart_checklist(issue_key, checklist_items):
+    """
+    Posts items to the Smart Checklist plugin via its dedicated REST API.
+    The SmartChecklist for Jira plugin (Railsware) exposes:
+      POST /rest/smartchecklist/1.0/issue/{issueKey}
+    with a JSON body: {"text": "- [ ] item1\n- [ ] item2"}
+    """
+    checklist_text = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
+    print(f"Posting Smart Checklist items to {issue_key} via plugin API...")
+    try:
+        make_request(
+            f"/rest/smartchecklist/1.0/issue/{issue_key}",
+            method="POST",
+            data={"text": checklist_text}
+        )
+        print(f"Smart Checklist populated on {issue_key}.")
+        return True
+    except Exception as e:
+        print(f"Smart Checklist plugin API failed: {e}. Trying PUT...")
+        try:
+            make_request(
+                f"/rest/smartchecklist/1.0/issue/{issue_key}",
+                method="PUT",
+                data={"text": checklist_text}
+            )
+            print(f"Smart Checklist populated on {issue_key} via PUT.")
+            return True
+        except Exception as e2:
+            print(f"Smart Checklist plugin API not available: {e2}")
+            return False
+
 def create_jira_task(project_key, summary, description, epic_key=None, checklist_items=None):
     """
     Creates a Task in Jira, associates it with the specified Epic under 'Issues in epic',
@@ -415,15 +446,10 @@ def main():
         description = "\n".join(desc_lines)
         issue_key = create_jira_task(args.project, summary, description, epic_key=args.epic, checklist_items=checklist_items)
 
-        # Post checklist items as a comment in Smart Checklist native format
-        # so the engineer can tick them off as each job completes
+        # Populate Smart Checklist via the plugin's dedicated REST API
+        # so the engineer can tick each item off as each job completes
         if issue_key and checklist_items:
-            try:
-                checklist_comment = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
-                post_comment(issue_key, checklist_comment)
-                print(f"Posted Smart Checklist items as comment on {issue_key}.")
-            except Exception as ex:
-                print(f"Note: Could not post checklist comment: {ex}")
+            post_smart_checklist(issue_key, checklist_items)
 
         if args.output_file and issue_key:
             with open(args.output_file, "w") as f:
