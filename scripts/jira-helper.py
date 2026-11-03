@@ -83,8 +83,13 @@ def get_checklist_field_id():
     try:
         fields = make_request("/rest/api/2/field", method="GET")
         if isinstance(fields, list):
-            # Prefer the exact "Smart Checklist" field. A substring match would
-            # also hit "Smart Checklist Progress" (a read-only counter field).
+            # On jsw.ibm.com the Smart Checklist panel is fed by the "Checklists"
+            # field (customfield_22401). The similarly named "Smart Checklist"
+            # and "Smart Checklist Progress" fields are not writable on the
+            # Task screen, so prefer the exact "Checklists" match.
+            for f in fields:
+                if (f.get("name") or "").strip().lower() == "checklists":
+                    return f.get("id")
             for f in fields:
                 if (f.get("name") or "").strip().lower() == "smart checklist":
                     return f.get("id")
@@ -124,7 +129,7 @@ def create_jira_task(project_key, summary, description, epic_key=None, checklist
     checklist_field_id = get_checklist_field_id() if checklist_items else None
     if checklist_field_id and checklist_items:
         print(f"Detected Smart Checklist field: {checklist_field_id}")
-        checklist_content = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
+        checklist_content = "\n".join([f"- {item.lstrip('*-+ ')}" for item in checklist_items])
         fields[checklist_field_id] = checklist_content
 
     issue_key = None
@@ -140,7 +145,7 @@ def create_jira_task(project_key, summary, description, epic_key=None, checklist
 
     if issue_key and checklist_field_id and checklist_items:
         try:
-            checklist_content = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
+            checklist_content = "\n".join([f"- {item.lstrip('*-+ ')}" for item in checklist_items])
             make_request(f"/rest/api/2/issue/{issue_key}", method="PUT", data={"fields": {checklist_field_id: checklist_content}})
             print(f"Populated Smart Checklist on {issue_key}.")
         except Exception as ex:
