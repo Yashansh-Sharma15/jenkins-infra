@@ -83,11 +83,15 @@ def get_checklist_field_id():
     try:
         fields = make_request("/rest/api/2/field", method="GET")
         if isinstance(fields, list):
-            # Prefer Smart Checklist plugin field
+            # Prefer the exact "Smart Checklist" field. A substring match would
+            # also hit "Smart Checklist Progress" (a read-only counter field).
+            for f in fields:
+                if (f.get("name") or "").strip().lower() == "smart checklist":
+                    return f.get("id")
             for f in fields:
                 name = (f.get("name") or "").lower()
                 custom = (f.get("schema", {}).get("custom") or "").lower()
-                if "smart checklist" in name or "smartchecklist" in custom:
+                if ("smart checklist" in name and "progress" not in name) or "smartchecklist" in custom:
                     return f.get("id")
             for f in fields:
                 name = (f.get("name") or "").lower()
@@ -97,37 +101,6 @@ def get_checklist_field_id():
     except Exception as e:
         print(f"Could not auto-detect checklist field id: {e}")
     return None
-
-def post_smart_checklist(issue_key, checklist_items):
-    """
-    Posts items to the Smart Checklist plugin via its dedicated REST API.
-    The SmartChecklist for Jira plugin (Railsware) exposes:
-      POST /rest/smartchecklist/1.0/issue/{issueKey}
-    with a JSON body: {"text": "- [ ] item1\n- [ ] item2"}
-    """
-    checklist_text = "\n".join([f"- [ ] {item.lstrip('*-+ ')}" for item in checklist_items])
-    print(f"Posting Smart Checklist items to {issue_key} via plugin API...")
-    try:
-        make_request(
-            f"/rest/smartchecklist/1.0/issue/{issue_key}",
-            method="POST",
-            data={"text": checklist_text}
-        )
-        print(f"Smart Checklist populated on {issue_key}.")
-        return True
-    except Exception as e:
-        print(f"Smart Checklist plugin API failed: {e}. Trying PUT...")
-        try:
-            make_request(
-                f"/rest/smartchecklist/1.0/issue/{issue_key}",
-                method="PUT",
-                data={"text": checklist_text}
-            )
-            print(f"Smart Checklist populated on {issue_key} via PUT.")
-            return True
-        except Exception as e2:
-            print(f"Smart Checklist plugin API not available: {e2}")
-            return False
 
 def create_jira_task(project_key, summary, description, epic_key=None, checklist_items=None):
     """
@@ -445,11 +418,6 @@ def main():
         
         description = "\n".join(desc_lines)
         issue_key = create_jira_task(args.project, summary, description, epic_key=args.epic, checklist_items=checklist_items)
-
-        # Populate Smart Checklist via the plugin's dedicated REST API
-        # so the engineer can tick each item off as each job completes
-        if issue_key and checklist_items:
-            post_smart_checklist(issue_key, checklist_items)
 
         if args.output_file and issue_key:
             with open(args.output_file, "w") as f:
