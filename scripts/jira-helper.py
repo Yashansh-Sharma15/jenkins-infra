@@ -158,39 +158,6 @@ def create_jira_task(project_key, summary, description, epic_key=None, checklist
     print(f"Successfully created Jira Issue: {issue_key}")
     return issue_key
 
-def mark_checklist_item_done(issue_key, match_keyword):
-    """
-    Updates the Smart Checklist on the issue by marking the matching line as done (- [x]).
-    """
-    checklist_field_id = get_checklist_field_id()
-    if not checklist_field_id:
-        return
-    try:
-        issue = make_request(f"/rest/api/2/issue/{issue_key}?fields={checklist_field_id}", method="GET")
-        raw_val = issue.get("fields", {}).get(checklist_field_id)
-        if not raw_val or not isinstance(raw_val, str):
-            return
-        lines = raw_val.splitlines()
-        updated_lines = []
-        changed = False
-        for line in lines:
-            clean_l = line.strip()
-            if match_keyword.lower() in clean_l.lower() and not clean_l.startswith("- [x]"):
-                if clean_l.startswith("- [ ]"):
-                    line = line.replace("- [ ]", "- [x]", 1)
-                elif clean_l.startswith("+"):
-                    line = line.replace("+", "- [x]", 1)
-                else:
-                    line = f"- [x] {clean_l.lstrip('-*+ ')}"
-                changed = True
-            updated_lines.append(line)
-        if changed:
-            new_val = "\n".join(updated_lines)
-            make_request(f"/rest/api/2/issue/{issue_key}", method="PUT", data={"fields": {checklist_field_id: new_val}})
-            print(f"Updated Smart Checklist on {issue_key}: marked item matching '{match_keyword}' as [x] DONE.")
-    except Exception as e:
-        print(f"Smart Checklist update note: {e}")
-
 def link_issue_into_epic(issue_key, epic_key, epic_field_id=None):
     """
     Associates an issue into an Epic so it shows under 'Issues in epic'.
@@ -480,24 +447,8 @@ def main():
             build_number=args.build_number
         )
         post_comment(issue_key, comment_body)
-
-        # 4. Update Smart Checklist item to DONE (- [x])
-        if args.job_type == "direct-deploy":
-            mark_checklist_item_done(issue_key, "Direct install")
-        elif args.job_type == "current-upgrade":
-            from_v = clean_version_str(args.from_build)
-            to_v = clean_version_str(args.to_build or args.release)
-            if from_v and to_v:
-                mark_checklist_item_done(issue_key, f"Upgrade from {from_v} to {to_v}")
-            else:
-                mark_checklist_item_done(issue_key, f"Upgrade to {to_v}")
-        elif args.job_type == "next-upgrade":
-            from_v = clean_version_str(args.from_build or args.release)
-            to_v = clean_version_str(args.to_build)
-            if from_v and to_v:
-                mark_checklist_item_done(issue_key, f"Upgrade from {from_v} to {to_v}")
-            else:
-                mark_checklist_item_done(issue_key, f"Upgrade from {from_v}")
+        # Smart Checklist items are ticked manually by the engineer after
+        # reviewing the job result and this Jira comment.
 
 if __name__ == "__main__":
     main()
