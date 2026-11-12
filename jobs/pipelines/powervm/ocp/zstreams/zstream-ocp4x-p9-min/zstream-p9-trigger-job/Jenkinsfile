@@ -11,9 +11,10 @@ pipeline {
     options { disableConcurrentBuilds() }
     environment {
         // TEST MODE: set to a release (e.g. "5.0") to pretend the previous build was <release>.0, so the
-        // current z-stream is treated as new: Jira task + child jobs are triggered for THAT release only,
-        // even on a fresh job with no 'versions' artifacts. Set to "" for normal operation.
-        // Leaving it set re-triggers (and creates a new Jira ticket) on every run.
+        // current z-stream of THAT release is always treated as new (Jira task + child jobs), even on a
+        // fresh job with no 'versions' artifacts. All other releases (4.x) behave normally: they trigger
+        // when a newer z-stream than the one in the 'versions' artifacts appears.
+        // Set to "" for normal operation. Leaving it set re-triggers the forced release on every run.
         FORCE_TEST_RELEASE = "5.0"
     }
     stages {
@@ -32,23 +33,23 @@ pipeline {
         stage("Identify newer Z streams and trigger Jenkins jobs") {
             steps {
                 script {
-                    def version_exists = "true"
+                    def firstRun = false
                     def forceRelease = env.FORCE_TEST_RELEASE?.trim()
-                    if(!fileExists("versions/") && !forceRelease){
-                        version_exists = "false"
+                    if(!fileExists("versions/")){
+                        firstRun = true
                         echo "Job has triggered for first time! Initializing the versions!"
-                        echo "Not triggering any Jobs for first time!"
+                        echo "Not triggering any Jobs for first time (except FORCE_TEST_RELEASE='${forceRelease}')!"
                     }
                     filenames = getChangedFilesList()
-                    if(filenames != null && version_exists == "true"){
+                    if(filenames != null){
                         filenames = filenames.toSet()
                         for (int i = 0; i < filenames.size(); i++) {
                             filename = filenames[i].trim()
                             
                             //Fetching release files information
                             (release, next_release, next_release_file) = getReleases(filename)
-                            if (forceRelease && release != forceRelease) {
-                                echo "FORCE_TEST_RELEASE=${forceRelease}: skipping ${release}"
+                            if (firstRun && release != forceRelease) {
+                                echo "First run: recording ${release}, not triggering"
                                 continue
                             }
                             latestBuild   = readFile(filename).readLines()
