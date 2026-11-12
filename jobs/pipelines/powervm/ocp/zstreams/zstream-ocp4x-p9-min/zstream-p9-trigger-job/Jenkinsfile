@@ -196,15 +196,14 @@ void triggerBuild(release, latestBuild, currentStableBuild, nextStableBuild, nex
 
     // Create Jira task under test Epic (POCPQE-2576) directly
     def jiraTicketId = ""
-    def jiraToken = "KdufClAHe82J5QBf2dFunNX4MhITyY1xcqDSqm"
     try {
         def scriptPath = "${WORKSPACE}/jenkins-infra/scripts/jira-helper.py"
         if (!fileExists(scriptPath)) {
             scriptPath = "${WORKSPACE}/scripts/jira-helper.py"
         }
+        withCredentials([string(credentialsId: 'JIRA_API_TOKEN', variable: 'JIRA_API_TOKEN')]) {
         sh """
             export JIRA_BASE_URL="https://jsw.ibm.com"
-            export JIRA_API_TOKEN="${jiraToken}"
             chmod +x ${scriptPath} || true
             python3 ${scriptPath} create-task \
                 --project "POCPQE" \
@@ -214,6 +213,8 @@ void triggerBuild(release, latestBuild, currentStableBuild, nextStableBuild, nex
                 --next-stable "${rawNextStable}" \
                 --output-file "${WORKSPACE}/jira_ticket_id.txt" || true
         """
+        }
+
         if (fileExists("${WORKSPACE}/jira_ticket_id.txt")) {
             jiraTicketId = readFile("${WORKSPACE}/jira_ticket_id.txt").trim()
         }

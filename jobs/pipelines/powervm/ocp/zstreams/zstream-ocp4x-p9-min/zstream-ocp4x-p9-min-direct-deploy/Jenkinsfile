@@ -280,20 +280,19 @@ pipeline {
                 script {
                     def jiraIssue = env.JIRA_TICKET_ID?.trim()
                     if (jiraIssue) {
-                        def jiraToken = "KdufClAHe82J5QBf2dFunNX4MhITyY1xcqDSqm"
                         def scriptPath = "${WORKSPACE}/jenkins-infra/scripts/jira-helper.py"
                         if (!fileExists(scriptPath)) {
                             scriptPath = "${WORKSPACE}/scripts/jira-helper.py"
                         }
                         def releaseVer = env.OPENSHIFT_RELEASE ?: env.OCP_RELEASE ?: ""
                         echo "Posting summary report and attachments to Jira Issue: ${jiraIssue}..."
+                        withCredentials([string(credentialsId: 'JIRA_API_TOKEN', variable: 'JIRA_API_TOKEN')]) {
                         sh """
                             cd ${WORKSPACE}/deploy
                             if [ ! -s "${WORKSPACE}/deploy/terraform_outputs.txt" ]; then
                                 make terraform:output TERRAFORM_DIR=.${TARGET} > ${WORKSPACE}/deploy/terraform_outputs.txt 2>/dev/null || true
                             fi
                             export JIRA_BASE_URL="https://jsw.ibm.com"
-                            export JIRA_API_TOKEN="${jiraToken}"
                             chmod +x ${scriptPath} || true
                             python3 ${scriptPath} post-report \
                                 --issue "${jiraIssue}" \
@@ -307,6 +306,7 @@ pipeline {
                                 --job-name "${JOB_NAME}" \
                                 --build-number "${BUILD_NUMBER}" || true
                         """
+                        }
                         echo "Jira update completed."
                     } else {
                         echo "No Jira Ticket ID provided (JIRA_TICKET_ID is empty). Skipping Jira report post."
