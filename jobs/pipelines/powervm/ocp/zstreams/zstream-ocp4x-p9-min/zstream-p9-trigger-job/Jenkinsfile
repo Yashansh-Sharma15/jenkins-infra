@@ -99,26 +99,46 @@ def getChangedFilesList() {
             fi
         done
 
-        # Checking if builds are available for OCP 5.0 (used as next release target for 4.22)
-        GREP_50="5[.]0[.].*multi"
-        GREP_50_EXCL="multi-|ec|fc"
-        VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "$GREP_50" | grep -v "$GREP_50_EXCL" | tail -1 | tr -d '"')
-        if [ "$VERSION_50" = "" ] && [ ! -f versions/5.0.txt ];
-        then
-            for i in 2 3 4 5 6 7 8 9 10 11 12
+        # Returns the newest quay tag matching $1 and not matching the egrep pattern $2,
+        # looking at the quay result pages listed in $3
+        QUAY_TAGS_URL="https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100"
+        fetch_latest_tag() {
+            for page in $3
             do
-                VERSION_50=$(curl -X GET "https://quay.io/api/v1/repository/openshift-release-dev/ocp-release/tag/?onlyActiveTags=true&limit=100&page=$i" | jq '.tags | sort_by(.start_ts) | .[].name' | grep "$GREP_50" | grep -v "$GREP_50_EXCL" | tail -1 | tr -d '"')
-                if [ "$VERSION_50" != "" ] ;
+                TAG=$(curl -s "$QUAY_TAGS_URL&page=$page" | jq -r '.tags | sort_by(.start_ts) | .[].name' | grep "$1" | grep -Ev "$2" | tail -1)
+                if [ "$TAG" != "" ];
                 then
-                    break
+                    echo "$TAG"
+                    return
                 fi
             done
-        fi
+        }
 
-        if [ "$VERSION_50" != "" ] && [ "$(cat versions/5.0.txt 2>/dev/null | grep multi)" != "$VERSION_50" ];
+        # Checking if new z-stream builds are available for OCP 5.x GA releases (same logic as 4.x above).
+        # The file name is printed so that the Jira task and the child jobs get triggered.
+        # Pages are scanned from the newest one and the first page with a match is used: a 5.x
+        # z-stream is often not on page 1 (5.0.1 is on page 2, 5.0.0 on page 3).
+        QUAY_PAGES="1 2 3 4 5 6 7 8 9 10 11 12"
+        for ocp_version in 5.0
+        do
+            GREP_PATTERN="^${ocp_version%%.*}[.]${ocp_version##*.}[.].*multi"
+            VERSION=$(fetch_latest_tag "$GREP_PATTERN" "multi-|rc|ec|fc" "$QUAY_PAGES")
+
+            if [ "$VERSION" != "" ] && [ "$(cat versions/$ocp_version.txt 2>/dev/null | grep multi)" != "$VERSION" ];
+            then
+                echo $VERSION > versions/$ocp_version.txt
+                echo -n $(date +%Y-%m-%d) >> versions/$ocp_version.txt
+                echo "versions/$ocp_version.txt"
+            fi
+        done
+
+        # Tracking the latest OCP 5.1 build (ec/rc/fc included) as the next-upgrade target for 5.0.x.
+        # The file name is NOT printed: a 5.1 pre-release must not trigger jobs by itself.
+        VERSION_51=$(fetch_latest_tag "^5[.]1[.].*multi" "multi-" "$QUAY_PAGES")
+        if [ "$VERSION_51" != "" ] && [ "$(cat versions/5.1.txt 2>/dev/null | grep multi)" != "$VERSION_51" ];
         then
-            echo $VERSION_50 > versions/5.0.txt
-            echo -n $(date +%Y-%m-%d) >> versions/5.0.txt
+            echo $VERSION_51 > versions/5.1.txt
+            echo -n $(date +%Y-%m-%d) >> versions/5.1.txt
         fi
     '''
     if(changedFiles != null){

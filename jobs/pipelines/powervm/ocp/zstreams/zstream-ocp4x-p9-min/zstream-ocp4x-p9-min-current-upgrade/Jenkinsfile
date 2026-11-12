@@ -112,12 +112,19 @@ pipeline {
                     // Added a condition for RHCOS_RELEASE to be set to 4.19 for OCP 4.20/4.21
                     if (env.OCP_RELEASE == "4.20" || env.OCP_RELEASE == "4.21"){
                         env.RHCOS_RELEASE = "4.19"
-                    } else if (env.OCP_RELEASE == "4.22"){
+                    } else if (env.OCP_RELEASE == "4.22" || env.OCP_RELEASE == "5.0"){
                         env.RHCOS_RELEASE = "9.8"
                     }
                     else {
                         env.RHCOS_RELEASE = env.OCP_RELEASE
                     }
+                    // OCP 5.0 is GA: z-streams (5.0.x) must use the GA client/installer, not the dev-preview candidate
+                    if (env.OCP_RELEASE == "5.0") {
+                        env.OPENSHIFT_INSTALL_TARBALL = "https://mirror.openshift.com/pub/openshift-v4/multi/clients/ocp/latest-5.0/ppc64le/openshift-install-linux.tar.gz"
+                        env.OPENSHIFT_CLIENT_TARBALL = "https://mirror.openshift.com/pub/openshift-v4/multi/clients/ocp/latest-5.0/ppc64le/openshift-client-linux.tar.gz"
+                        env.OPENSHIFT_CLIENT_TARBALL_AMD64 = "https://mirror.openshift.com/pub/openshift-v4/multi/clients/ocp/latest-5.0/amd64/openshift-client-linux.tar.gz"
+                    }
+
                 }
             }
         }
